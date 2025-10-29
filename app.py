@@ -611,9 +611,9 @@ def build_area_explanation(
             lines.append(f"    - {r['surplus_habitat']} ({r['surplus_band']}{', ' + r['surplus_broad'] if r['surplus_broad'] else ''}) → **{r['units_transferred']:.4f}**")
 
     if NG > 1e-9:
-        lines.append(f"**Net Gain remainder to quote (after habitat residuals):** **{NG:.4f}** units.")
+        lines.append(f"**Headline Net Gain remainder (still to source):** **{NG:.4f}** units.")
     else:
-        lines.append("**Net Gain remainder:** fully covered (no additional NG units to buy).")
+        lines.append("**Headline Net Gain:** fully covered by surpluses (no additional NG units needed).")
 
     return "\n".join(lines)
 
@@ -691,6 +691,9 @@ def build_sankey_requirements_left(
          ["units_transferred"].sum().reset_index()
     )
     agg = agg[agg["units_transferred"] > min_link]
+    
+    # Exclude headline flows from agg - they're handled separately below
+    agg = agg[agg["deficit_habitat"].astype(str).str.strip().str.lower() != "headline net gain requirement"]
 
     # ----- layout buckets -----
     # “Real” bands for data: we still place nodes by distinctiveness slices VH, High, Medium, Low, Net Gain
@@ -1047,23 +1050,22 @@ with tabs[0]:
         residual_table = alloc["residual_off_site"].copy()
         sum_habitat_residuals = float(residual_table["unmet_units_after_on_site_offset"].sum()) if not residual_table.empty else 0.0
 
-        # Net Gain remainder to quote = (Headline after allocation) − (habitat residuals)
-        remaining_ng_to_quote = None
-        if residual_headline_after_allocation is not None:
-            remaining_ng_to_quote = max(residual_headline_after_allocation - sum_habitat_residuals, 0.0)
-
-        # Combined residual headline table (add NG remainder row only if >0)
+        # Combined residual table includes both habitat residuals AND headline remainder
+        # These are SEPARATE requirements that both need to be sourced
         combined_residual = residual_table.copy()
-        if remaining_ng_to_quote is not None and remaining_ng_to_quote > 1e-9:
+        if residual_headline_after_allocation is not None and residual_headline_after_allocation > 1e-9:
             combined_residual = pd.concat([
                 combined_residual,
                 pd.DataFrame([{
                     "habitat": "Headline Net Gain requirement (Area, residual after surplus allocation)",
                     "broad_group": "—",
                     "distinctiveness": "Net Gain",
-                    "unmet_units_after_on_site_offset": round(remaining_ng_to_quote, 4)
+                    "unmet_units_after_on_site_offset": round(residual_headline_after_allocation, 4)
                 }])
             ], ignore_index=True)
+        
+        # For display: headline remainder (this is what still needs to be sourced for Net Gain)
+        remaining_ng_to_quote = residual_headline_after_allocation if residual_headline_after_allocation is not None else 0.0
 
         # KPIs
         k_units = round(float(combined_residual["unmet_units_after_on_site_offset"].sum()) if not combined_residual.empty else 0.0, 4)
