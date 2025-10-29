@@ -646,6 +646,7 @@ def build_sankey_requirements_left(
     residual_table: pd.DataFrame | None,
     remaining_ng_to_quote: float | None,
     deficit_table: pd.DataFrame,
+    surplus_table: pd.DataFrame | None = None,
     surplus_detail: pd.DataFrame | None = None,
     min_link: float = 1e-4,
     height: int = 400,          # was 560
@@ -718,6 +719,14 @@ def build_sankey_requirements_left(
         d_band = str(r["distinctiveness"])
         if d_band in req_nodes_by_band and d_lab not in sum(req_nodes_by_band.values(), []):
             req_nodes_by_band[d_band].append(d_lab)
+
+    # Add ALL surpluses from surplus_table (not just those with flows)
+    if surplus_table is not None and not surplus_table.empty:
+        for _, s in surplus_table.iterrows():
+            s_lab = f"S: {clean_text(s['habitat'])}"
+            s_band = str(s.get("distinctiveness", "Other"))
+            if s_band in sur_nodes_by_band and s_lab not in sum(sur_nodes_by_band.values(), []):
+                sur_nodes_by_band[s_band].append(s_lab)
 
     # Always show Headline left node
     headline_left = "D: Headline 10% requirement"
@@ -1067,6 +1076,7 @@ with tabs[0]:
                 residual_table=residual_table,
                 remaining_ng_to_quote=remaining_ng_to_quote,
                 deficit_table=alloc["deficits"],
+                surplus_table=alloc["surpluses"],
                 surplus_detail=surplus_detail,
                 height=380,            # <= compact height
                 compact_nodes=True,    # force compact
