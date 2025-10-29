@@ -747,29 +747,41 @@ def build_sankey_requirements_left(
 
     # Distinctiveness slices (VH..Low..Net Gain)
     for band, xcenter in data_band_to_x.items():
-        # requirements (left side of slice)
+        # requirements (left side of slice) - RED color for deficits
         left_x = xcenter - 0.035
         reqs = req_nodes_by_band.get(band, [])
         req_ys = _even_y(len(reqs), offset=0.0 if band != "Net Gain" else -0.06)
         for i, lab in enumerate(reqs):
-            labels.append(lab); colors.append(_rgb(band)); xs.append(left_x); ys.append(req_ys[i])
+            labels.append(lab)
+            colors.append("rgba(244,67,54,0.8)")  # Red for deficit nodes
+            xs.append(left_x)
+            ys.append(req_ys[i])
             idx[lab] = len(labels) - 1
-        # surpluses (right side of slice)
+        # surpluses (right side of slice) - GREEN color for surpluses
         right_x = xcenter + 0.035
         surs = sur_nodes_by_band.get(band, [])
         sur_ys = _even_y(len(surs), offset=0.0 if band != "Low" else -0.03)
         for i, lab in enumerate(surs):
-            labels.append(lab); colors.append(_rgb(band)); xs.append(right_x); ys.append(sur_ys[i])
+            labels.append(lab)
+            colors.append("rgba(76,175,80,0.8)")  # Green for surplus nodes
+            xs.append(right_x)
+            ys.append(sur_ys[i])
             idx[lab] = len(labels) - 1
 
-    # Total NG sink (far right) - for deficits/requirements
+    # Total NG sink (far right) - for deficits/requirements - RED
     total_ng = "Total Net Gain (to source)"
-    labels.append(total_ng); colors.append(_rgb("Net Gain")); xs.append(0.98); ys.append(0.35)
+    labels.append(total_ng)
+    colors.append("rgba(244,67,54,0.8)")  # Red for deficit sink
+    xs.append(0.98)
+    ys.append(0.25)  # Lower position
     idx[total_ng] = len(labels) - 1
     
-    # Surplus pool (far right) - for remaining surpluses
+    # Surplus pool (far right) - for remaining surpluses - GREEN
     surplus_pool = "Surplus After Requirements met"
-    labels.append(surplus_pool); colors.append(_rgb("Net Gain")); xs.append(0.98); ys.append(0.65)
+    labels.append(surplus_pool)
+    colors.append("rgba(76,175,80,0.8)")  # Green for surplus pool
+    xs.append(0.98)
+    ys.append(0.75)  # Upper position for better separation
     idx[surplus_pool] = len(labels) - 1
 
     # ----- links -----
@@ -844,7 +856,7 @@ def build_sankey_requirements_left(
     )
 
     fig = go.Figure(data=[go.Sankey(
-        arrangement="fixed",  # Keep nodes in specified x,y positions
+        arrangement="snap",  # Allow interaction and auto-positioning with guidance from x,y
         node=node_kwargs,
         link=dict(source=sources, target=targets, value=values, color=lcolors)
     )])
