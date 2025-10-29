@@ -828,50 +828,7 @@ def build_sankey_requirements_left(
         values.append(float(remaining_ng_to_quote))
         lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
-    # Add invisible "creation" flows to ensure nodes are sized by their full values
-    # Both deficit and surplus nodes need incoming flows equal to their full values
-    
-    # 1. Deficit source (feeds full deficit value into each deficit node)
-    deficit_source_label = "__deficit_creation__"
-    labels.append(deficit_source_label)
-    colors.append("rgba(255,255,255,0.01)")  # Nearly invisible
-    xs.append(-0.05)  # Far left, off-screen
-    ys.append(0.5)
-    idx[deficit_source_label] = len(labels) - 1
-    
-    for _, r in per_def.iterrows():
-        d_lab = f"D: {r['habitat']}"
-        if d_lab in idx:
-            full_deficit = float(r["need_units"])
-            if full_deficit > min_link:
-                # Add invisible creation flow: __deficit_creation__ → Deficit
-                sources.append(idx[deficit_source_label])
-                targets.append(idx[d_lab])
-                values.append(full_deficit)
-                lcolors.append("rgba(200,200,200,0.08)")  # Very faint gray
-    
-    # 2. Surplus source (feeds full surplus value into each surplus node)
-    surplus_source_label = "__surplus_creation__"
-    labels.append(surplus_source_label)
-    colors.append("rgba(255,255,255,0.01)")  # Nearly invisible
-    xs.append(1.05)  # Far right, off-screen
-    ys.append(0.5)
-    idx[surplus_source_label] = len(labels) - 1
-    
-    if surplus_table is not None and not surplus_table.empty:
-        for _, s in surplus_table.iterrows():
-            s_lab = f"S: {clean_text(s['habitat'])}"
-            if s_lab in idx:
-                # Get the FULL original surplus value (project_wide_change)
-                full_val = float(pd.to_numeric(s.get("project_wide_change", 0.0), errors="coerce") or 0.0)
-                if full_val > min_link:
-                    # Add invisible creation flow: __surplus_creation__ → Surplus
-                    sources.append(idx[surplus_source_label])
-                    targets.append(idx[s_lab])
-                    values.append(full_val)
-                    lcolors.append("rgba(200,200,200,0.08)")  # Very faint gray
-    
-    # Remaining surpluses (after all allocations) → Surplus Pool
+    # Remaining surpluses (after all allocations) → Total NG
     if surplus_detail is not None and not surplus_detail.empty:
         for _, s in surplus_detail.iterrows():
             remaining = float(s.get("surplus_remaining_units", 0.0))
