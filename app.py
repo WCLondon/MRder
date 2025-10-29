@@ -755,10 +755,15 @@ def build_sankey_requirements_left(
             labels.append(lab); colors.append(_rgb(band)); xs.append(right_x); ys.append(sur_ys[i])
             idx[lab] = len(labels) - 1
 
-    # Total NG sink (far right)
+    # Total NG sink (far right) - for deficits/requirements
     total_ng = "Total Net Gain (to source)"
-    labels.append(total_ng); colors.append(_rgb("Net Gain")); xs.append(0.98); ys.append(0.92)
+    labels.append(total_ng); colors.append(_rgb("Net Gain")); xs.append(0.98); ys.append(0.35)
     idx[total_ng] = len(labels) - 1
+    
+    # Surplus pool (far right) - for remaining surpluses
+    surplus_pool = "Surplus After Requirements met"
+    labels.append(surplus_pool); colors.append(_rgb("Net Gain")); xs.append(0.98); ys.append(0.65)
+    idx[surplus_pool] = len(labels) - 1
 
     # ----- links -----
     sources, targets, values, lcolors = [], [], [], []
@@ -771,7 +776,7 @@ def build_sankey_requirements_left(
         if val <= min_link: continue
         if d_lab in idx and s_lab in idx:
             sources.append(idx[d_lab]); targets.append(idx[s_lab]); values.append(val)
-            lcolors.append(_rgba(str(r["surplus_band"]), 0.72))
+            lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
 
     # Each deficit’s unmet residual → Total NG
     for _, r in per_def.iterrows():
@@ -779,7 +784,7 @@ def build_sankey_requirements_left(
         residual = residual_map.get(d_lab, float(r["residual_units"]))
         if residual > min_link and d_lab in idx:
             sources.append(idx[d_lab]); targets.append(idx[total_ng]); values.append(residual)
-            lcolors.append("rgba(120,120,120,0.6)")
+            lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
     # Headline → surplus (applied) - supports any band now
     headline_to_surplus = f[
@@ -794,14 +799,15 @@ def build_sankey_requirements_left(
             sources.append(idx[headline_left]); targets.append(idx[s_lab]); values.append(amt)
             # Use semi-transparent dark blue for surplus→headline flows
             if rr.get('flow_type') == 'surplus→headline':
-                lcolors.append("rgba(25,118,210,0.7)")  # semi-transparent dark blue
+                lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
             else:
-                lcolors.append(_rgba(band, 0.78))
+                lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
 
     # Headline remainder → Total NG
     if (remaining_ng_to_quote or 0.0) > min_link and (headline_left in idx):
         sources.append(idx[headline_left]); targets.append(idx[total_ng])
-        values.append(float(remaining_ng_to_quote)); lcolors.append(_rgba("Net Gain", 0.85))
+        values.append(float(remaining_ng_to_quote))
+        lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
     # Remaining surpluses (after all allocations) → Total NG
     if surplus_detail is not None and not surplus_detail.empty:
@@ -810,11 +816,11 @@ def build_sankey_requirements_left(
             if remaining > min_link:
                 s_lab = f"S: {clean_text(s['habitat'])}"
                 if s_lab in idx:
-                    sources.append(idx[s_lab]); targets.append(idx[total_ng])
+                    sources.append(idx[s_lab]); targets.append(idx[surplus_pool])
                     values.append(remaining)
                     # Use the band color with transparency
                     band = str(s.get("distinctiveness", "Other"))
-                    lcolors.append(_rgba(band, 0.65))
+                    lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
 
     # If no links, show friendly placeholder
     if not values:
