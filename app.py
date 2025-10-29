@@ -791,7 +791,7 @@ def build_sankey_requirements_left(
     for _, r in agg.iterrows():
         d_lab = f"D: {r['deficit_habitat']}"
         s_lab = f"S: {r['surplus_habitat']}"
-        val   = float(r["units_transferred"])
+        val   = abs(float(r["units_transferred"]))  # Use absolute value for node sizing
         if val <= min_link: continue
         if d_lab in idx and s_lab in idx:
             sources.append(idx[d_lab]); targets.append(idx[s_lab]); values.append(val)
@@ -800,7 +800,7 @@ def build_sankey_requirements_left(
     # Each deficit’s unmet residual → Total NG
     for _, r in per_def.iterrows():
         d_lab = f"D: {r['habitat']}"
-        residual = residual_map.get(d_lab, float(r["residual_units"]))
+        residual = abs(residual_map.get(d_lab, float(r["residual_units"])))  # Use absolute value
         if residual > min_link and d_lab in idx:
             sources.append(idx[d_lab]); targets.append(idx[total_ng]); values.append(residual)
             lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
@@ -813,7 +813,7 @@ def build_sankey_requirements_left(
     for _, rr in headline_to_surplus.iterrows():
         s_lab = f"S: {rr['surplus_habitat']}"
         if (headline_left in idx) and (s_lab in idx):
-            amt = float(rr["units_transferred"])
+            amt = abs(float(rr["units_transferred"]))  # Use absolute value
             band = str(rr.get('surplus_band', 'Low'))
             sources.append(idx[headline_left]); targets.append(idx[s_lab]); values.append(amt)
             # Use semi-transparent dark blue for surplus→headline flows
@@ -825,13 +825,13 @@ def build_sankey_requirements_left(
     # Headline remainder → Total NG
     if (remaining_ng_to_quote or 0.0) > min_link and (headline_left in idx):
         sources.append(idx[headline_left]); targets.append(idx[total_ng])
-        values.append(float(remaining_ng_to_quote))
+        values.append(abs(float(remaining_ng_to_quote)))  # Use absolute value
         lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
     # Remaining surpluses (after all allocations) → Total NG
     if surplus_detail is not None and not surplus_detail.empty:
         for _, s in surplus_detail.iterrows():
-            remaining = float(s.get("surplus_remaining_units", 0.0))
+            remaining = abs(float(s.get("surplus_remaining_units", 0.0)))  # Use absolute value
             if remaining > min_link:
                 s_lab = f"S: {clean_text(s['habitat'])}"
                 if s_lab in idx:
