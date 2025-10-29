@@ -655,6 +655,7 @@ def build_sankey_requirements_left(
     deficit_table: pd.DataFrame,
     surplus_table: pd.DataFrame | None = None,
     surplus_detail: pd.DataFrame | None = None,
+    residual_headline_after_allocation: float | None = None,
     min_link: float = 1e-4,
     height: int = 400,          # was 560
     compact_nodes: bool = True, # default to compact
@@ -805,27 +806,25 @@ def build_sankey_requirements_left(
             sources.append(idx[d_lab]); targets.append(idx[total_ng]); values.append(residual)
             lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
-    # Headline → surplus (applied) - supports any band now
-    headline_to_surplus = f[
+    # Surplus → Headline (applied) - supports any band now
+    headline_from_surplus = f[
         (f["deficit_habitat"].astype(str).str.strip().str.lower() == "net gain uplift (headline)")
         & (f["units_transferred"] > min_link)
     ]
-    for _, rr in headline_to_surplus.iterrows():
+    for _, rr in headline_from_surplus.iterrows():
         s_lab = f"S: {rr['surplus_habitat']}"
         if (headline_left in idx) and (s_lab in idx):
             amt = abs(float(rr["units_transferred"]))  # Use absolute value
-            band = str(rr.get('surplus_band', 'Low'))
-            sources.append(idx[headline_left]); targets.append(idx[s_lab]); values.append(amt)
-            # Use semi-transparent dark blue for surplus→headline flows
-            if rr.get('flow_type') == 'surplus→headline':
-                lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
-            else:
-                lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
+            # REVERSED: surplus flows TO headline (deficit)
+            sources.append(idx[s_lab]); targets.append(idx[headline_left]); values.append(amt)
+            lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
 
     # Headline remainder → Total NG
-    if (remaining_ng_to_quote or 0.0) > min_link and (headline_left in idx):
+    # Use residual_headline_after_allocation if provided, otherwise fall back to remaining_ng_to_quote
+    headline_remainder = residual_headline_after_allocation if residual_headline_after_allocation is not None else remaining_ng_to_quote
+    if (headline_remainder or 0.0) > min_link and (headline_left in idx):
         sources.append(idx[headline_left]); targets.append(idx[total_ng])
-        values.append(abs(float(remaining_ng_to_quote)))  # Use absolute value
+        values.append(abs(float(headline_remainder)))  # Use absolute value
         lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
     # Remaining surpluses (after all allocations) → Total NG
@@ -993,10 +992,15 @@ with tabs[0]:
         target_pct = headline_info["target_percent"]
         baseline_units = headline_info["baseline_units"]
         
+        # Calculate headline requirement: baseline × target %
+        # This is the TOTAL requirement, not reduced by achieved uplift
+        headline_requirement = baseline_units * target_pct
+        
         # Calculate achieved uplift from project-wide changes
         achieved_uplift = float(area_norm["project_wide_change"].clip(lower=0).sum())
-        target_uplift = baseline_units * target_pct
-        remaining_target = max(target_uplift - achieved_uplift, 0.0)
+        
+        # Remaining target for allocation (after subtracting achieved uplift)
+        remaining_target = max(headline_requirement - achieved_uplift, 0.0)
         
         # Prepare per-surplus remaining detail for allocation to headline
         surplus_detail = alloc["surplus_after_offsets_detail"].copy()
@@ -1004,7 +1008,9 @@ with tabs[0]:
         
         # Allocate surpluses to headline (any band, prioritized High→Medium→Low)
         applied_to_headline, ng_flow_rows = allocate_to_headline(remaining_target, surplus_detail)
-        headline_def = remaining_target
+        
+        # headline_def is the TOTAL requirement (for display), not the remaining
+        headline_def = headline_requirement
         residual_headline_after_allocation = max(remaining_target - applied_to_headline, 0.0)
 
         # Combine habitat flows + NG flows into one matrix so the story is traceable
@@ -1103,6 +1109,7 @@ with tabs[0]:
                 deficit_table=alloc["deficits"],
                 surplus_table=alloc["surpluses"],
                 surplus_detail=surplus_detail,
+                residual_headline_after_allocation=residual_headline_after_allocation,
                 height=380,            # <= compact height
                 compact_nodes=True,    # force compact
                 show_zebra=True
