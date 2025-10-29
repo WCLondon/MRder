@@ -831,7 +831,25 @@ def build_sankey_requirements_left(
         values.append(float(remaining_ng_to_quote))
         lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
-    # Remove the source node creation - using reversed flows instead
+    # Add invisible source flows for deficit nodes to ensure correct sizing
+    # Deficit nodes should be sized by their FULL original deficit, not just remaining
+    deficit_source_label = "__deficit_source__"
+    labels.append(deficit_source_label)
+    colors.append("rgba(200,200,200,0.05)")  # Nearly invisible
+    xs.append(0.0)  # Far left, off-screen
+    ys.append(0.5)
+    idx[deficit_source_label] = len(labels) - 1
+    
+    for _, r in per_def.iterrows():
+        d_lab = f"D: {r['habitat']}"
+        if d_lab in idx:
+            full_deficit = float(r["need_units"])
+            if full_deficit > min_link:
+                # Add invisible source flow: __deficit_source__ → Deficit
+                sources.append(idx[deficit_source_label])
+                targets.append(idx[d_lab])
+                values.append(full_deficit)
+                lcolors.append("rgba(200,200,200,0.1)")  # Very faint gray
     
     # Remaining surpluses (after all allocations) → Surplus Pool
     if surplus_detail is not None and not surplus_detail.empty:
