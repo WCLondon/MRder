@@ -856,7 +856,7 @@ def build_sankey_requirements_left(
     )
 
     fig = go.Figure(data=[go.Sankey(
-        arrangement="snap",  # Allow interaction and auto-positioning with guidance from x,y
+        # No arrangement parameter = freeform mode, respects x,y coordinates
         node=node_kwargs,
         link=dict(source=sources, target=targets, value=values, color=lcolors)
     )])
