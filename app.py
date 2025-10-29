@@ -229,7 +229,14 @@ def can_offset_area(d_band: str, d_broad: str, d_hab: str,
     d_hab = clean_text(d_hab); s_hab = clean_text(s_hab)
     if d_band == "Very High": return d_hab == s_hab
     if d_band == "High":      return d_hab == s_hab
-    if d_band == "Medium":    return (d_broad != "" and d_broad == s_broad) and (rs >= rd)
+    if d_band == "Medium":
+        # High or Very High can offset Medium from any broad group
+        if rs > rd:  # High (3) or Very High (4) > Medium (2)
+            return True
+        # Medium can offset Medium only if same broad group
+        if rs == rd:  # Both Medium
+            return d_broad != "" and d_broad == s_broad
+        return False
     if d_band == "Low":       return rs >= rd
     return False
 
