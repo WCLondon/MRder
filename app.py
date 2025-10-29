@@ -327,6 +327,108 @@ def apply_area_offsets(area_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         ).reset_index(drop=True)
     }
 
+# ------------- headline parser (Dynamic Target) -------------
+def parse_headline_target_row(xls: pd.ExcelFile, unit_type_keyword: str = "Area habitat units") -> Dict[str, float]:
+    """
+    Parse Headline Results for dynamic target %, baseline units, units required, and deficit.
+    Returns a dict with keys: target_percent, baseline_units, units_required, unit_deficit
+    """
+    SHEET_NAME = "Headline Results"
+    def clean(s):
+        if s is None or (isinstance(s, float) and pd.isna(s)): return ""
+        return re.sub(r"\s+", " ", str(s).strip())
+    
+    def extract_percent(val) -> Optional[float]:
+        """Extract percentage from string like '10 %' or '15%'"""
+        if val is None or (isinstance(val, float) and pd.isna(val)): return None
+        s = clean(str(val))
+        # Try direct numeric conversion first
+        num = pd.to_numeric(s.replace("%", "").strip(), errors="coerce")
+        if pd.notna(num):
+            # If value is already 0-1 range, use as-is; if >1, divide by 100
+            return float(num / 100.0 if num > 1 else num)
+        return None
+    
+    try:
+        raw = pd.read_excel(xls, sheet_name=SHEET_NAME, header=None)
+    except Exception:
+        return {"target_percent": 0.10, "baseline_units": 0.0, "units_required": 0.0, "unit_deficit": 0.0}
+    
+    # Find header row with "Unit Type", "Baseline", "Target", etc.
+    header_idx = None
+    for i in range(min(200, len(raw))):
+        txt = " ".join([clean(x).lower() for x in raw.iloc[i].tolist()])
+        if "unit type" in txt and ("target" in txt or "baseline" in txt):
+            header_idx = i
+            break
+    
+    if header_idx is None:
+        # Fallback to default 10%
+        return {"target_percent": 0.10, "baseline_units": 0.0, "units_required": 0.0, "unit_deficit": 0.0}
+    
+    df = raw.iloc[header_idx:].copy()
+    df.columns = [clean(x) for x in df.iloc[0].tolist()]
+    df = df.iloc[1:].reset_index(drop=True)
+    
+    # Stop at first empty row
+    stop_at = None
+    for r in range(len(df)):
+        if " ".join([clean(v) for v in df.iloc[r].tolist()]) == "":
+            stop_at = r
+            break
+    if stop_at is not None:
+        df = df.iloc[:stop_at].copy()
+    
+    # Normalize column names
+    norm = {re.sub(r"[^a-z0-9]+", "_", c.lower()).strip("_"): c for c in df.columns}
+    
+    # Find relevant columns
+    unit_col = next((norm[k] for k in ["unit_type", "type", "unit"] if k in norm), None)
+    baseline_col = next((norm[k] for k in ["baseline_units", "baseline", "baseline_unit"] if k in norm), None)
+    target_col = next((norm[k] for k in ["target", "target_percent", "target_"] if k in norm), None)
+    required_col = next((norm[k] for k in ["units_required", "required", "required_units"] if k in norm), None)
+    deficit_col = next((norm[k] for k in ["unit_deficit", "units_deficit", "deficit", "shortfall"] if k in norm), None)
+    
+    # Find the area habitat units row
+    def is_target_row(row) -> bool:
+        if unit_col:
+            val = clean(row.get(unit_col, "")).lower()
+            if re.search(r"\barea\s*habitat\s*units\b", val):
+                return True
+        return re.search(r"\barea\s*habitat\s*units\b", " ".join([clean(v).lower() for v in row.tolist()])) is not None
+    
+    mask = df.apply(is_target_row, axis=1)
+    if not mask.any():
+        return {"target_percent": 0.10, "baseline_units": 0.0, "units_required": 0.0, "unit_deficit": 0.0}
+    
+    row = df.loc[mask].iloc[0]
+    
+    # Extract values
+    baseline_units = 0.0
+    if baseline_col and baseline_col in row.index:
+        baseline_units = float(pd.to_numeric(row[baseline_col], errors="coerce") or 0.0)
+    
+    target_percent = 0.10  # default
+    if target_col and target_col in row.index:
+        pct = extract_percent(row[target_col])
+        if pct is not None:
+            target_percent = pct
+    
+    units_required = 0.0
+    if required_col and required_col in row.index:
+        units_required = float(pd.to_numeric(row[required_col], errors="coerce") or 0.0)
+    
+    unit_deficit = 0.0
+    if deficit_col and deficit_col in row.index:
+        unit_deficit = float(pd.to_numeric(row[deficit_col], errors="coerce") or 0.0)
+    
+    return {
+        "target_percent": target_percent,
+        "baseline_units": baseline_units,
+        "units_required": units_required,
+        "unit_deficit": unit_deficit
+    }
+
 # ------------- headline parser (Area Unit Deficit) -------------
 def parse_headline_area_deficit(xls: pd.ExcelFile) -> Optional[float]:
     SHEET_NAME = "Headline Results"
@@ -398,13 +500,59 @@ def parse_headline_area_deficit(xls: pd.ExcelFile) -> Optional[float]:
         return float(max(required_10pc - net_change, 0.0))
     return None
 
+# ------------- allocate surplus to headline (multi-band) -------------
+def allocate_to_headline(
+    remaining_target: float,
+    surplus_detail: pd.DataFrame
+) -> Tuple[float, List[dict]]:
+    """
+    Allocate any available surplus (prioritized High→Medium→Low) to cover headline net gain target.
+    Returns: (total_applied, list of flow records)
+    """
+    if remaining_target <= 1e-9:
+        return 0.0, []
+    
+    band_rank = {"Very High": 4, "High": 3, "Medium": 2, "Low": 1}
+    
+    # Sort surpluses by rank (higher first), then by remaining units (larger first)
+    surs = surplus_detail.copy()
+    surs["surplus_remaining_units"] = pd.to_numeric(surs["surplus_remaining_units"], errors="coerce").fillna(0.0)
+    surs = surs[surs["surplus_remaining_units"] > 1e-9]
+    surs["__rank__"] = surs["distinctiveness"].map(lambda b: band_rank.get(str(b), 0))
+    surs = surs.sort_values(by=["__rank__", "surplus_remaining_units"], ascending=[False, False])
+    
+    flows = []
+    to_cover = remaining_target
+    
+    for _, s in surs.iterrows():
+        if to_cover <= 1e-9:
+            break
+        give = min(to_cover, float(s["surplus_remaining_units"]))
+        if give <= 1e-9:
+            continue
+        
+        flows.append({
+            "deficit_habitat": "Net Gain uplift (Headline)",
+            "deficit_broad": "—",
+            "deficit_band": "Net Gain",
+            "surplus_habitat": clean_text(s["habitat"]),
+            "surplus_broad": clean_text(s["broad_group"]),
+            "surplus_band": str(s["distinctiveness"]),
+            "units_transferred": round(give, 7),
+            "flow_type": "surplus→headline"
+        })
+        to_cover -= give
+    
+    total_applied = remaining_target - to_cover
+    return total_applied, flows
+
 # ------------- explainer builder -------------
 def build_area_explanation(
     alloc: Dict[str, pd.DataFrame],
+    headline_info: Dict[str, float],
     headline_def: Optional[float],
-    low_available: float,
-    applied_low_to_headline: Optional[float],
-    residual_headline_after_low: Optional[float],
+    applied_to_headline: float,
+    residual_headline_after_allocation: Optional[float],
     remaining_ng_to_quote: Optional[float],
     ng_flow_rows: List[dict]
 ) -> str:
@@ -432,18 +580,26 @@ def build_area_explanation(
     else:
         lines.append("\n**Habitat-specific residuals:** none remain after on-site offsets.")
 
+    # Dynamic target display
+    target_pct = headline_info.get("target_percent", 0.10) * 100
+    baseline = headline_info.get("baseline_units", 0.0)
     H = 0.0 if headline_def is None else float(headline_def)
-    used_low = 0.0 if applied_low_to_headline is None else float(applied_low_to_headline)
-    R = 0.0 if residual_headline_after_low is None else float(residual_headline_after_low)
+    applied = float(applied_to_headline or 0.0)
+    R = 0.0 if residual_headline_after_allocation is None else float(residual_headline_after_allocation)
     NG = 0.0 if remaining_ng_to_quote is None else float(remaining_ng_to_quote)
 
-    lines.append(
-        f"\n**Headline (10% Net Gain):** requirement **{H:.4f}** units. "
-        f"Available Low surplus **{low_available:.4f}** → applied **{used_low:.4f}**, leaving **{R:.4f}**."
-    )
+    if H <= 1e-9:
+        lines.append(
+            f"\n**Headline ({target_pct:.0f}% Net Gain):** 🎉 Project already exceeds {target_pct:.0f}% Net Gain target (baseline: {baseline:.4f} units) — no Headline deficit."
+        )
+    else:
+        lines.append(
+            f"\n**Headline ({target_pct:.0f}% Net Gain):** requirement **{H:.4f}** units (target: {target_pct:.0f}% of {baseline:.4f} baseline). "
+            f"Applied **{applied:.4f}** from surpluses, leaving **{R:.4f}**."
+        )
 
     if ng_flow_rows:
-        lines.append("  - Low surplus used against Headline came from:")
+        lines.append("  - Surplus used against Headline came from:")
         for r in ng_flow_rows:
             lines.append(f"    - {r['surplus_habitat']} ({r['surplus_band']}{', ' + r['surplus_broad'] if r['surplus_broad'] else ''}) → **{r['units_transferred']:.4f}**")
 
@@ -453,6 +609,7 @@ def build_area_explanation(
         lines.append("**Net Gain remainder:** fully covered (no additional NG units to buy).")
 
     return "\n".join(lines)
+
 
 # ---------- Banded Sankey: Requirements (left) → Surpluses (right) → Total Net Gain (far right) ----------
 # ---------- Banded Sankey: Requirements (left) → Surpluses (right) → Total Net Gain (far right)
@@ -614,17 +771,22 @@ def build_sankey_requirements_left(
             sources.append(idx[d_lab]); targets.append(idx[total_ng]); values.append(residual)
             lcolors.append("rgba(120,120,120,0.6)")
 
-    # Headline → Low surplus (applied)
-    low_to_head = f[
+    # Headline → surplus (applied) - supports any band now
+    headline_to_surplus = f[
         (f["deficit_habitat"].astype(str).str.strip().str.lower() == "net gain uplift (headline)")
         & (f["units_transferred"] > min_link)
     ]
-    for _, rr in low_to_head.iterrows():
+    for _, rr in headline_to_surplus.iterrows():
         s_lab = f"S: {rr['surplus_habitat']}"
         if (headline_left in idx) and (s_lab in idx):
             amt = float(rr["units_transferred"])
+            band = str(rr.get('surplus_band', 'Low'))
             sources.append(idx[headline_left]); targets.append(idx[s_lab]); values.append(amt)
-            lcolors.append(_rgba("Low", 0.78))
+            # Use semi-transparent dark blue for surplus→headline flows
+            if rr.get('flow_type') == 'surplus→headline':
+                lcolors.append("rgba(25,118,210,0.7)")  # semi-transparent dark blue
+            else:
+                lcolors.append(_rgba(band, 0.78))
 
     # Headline remainder → Total NG
     if (remaining_ng_to_quote or 0.0) > min_link and (headline_left in idx):
@@ -726,7 +888,8 @@ with st.sidebar:
                 "- Very High: same habitat only\n"
                 "- High: same habitat only\n"
                 "- Medium: same **broad group**; distinctiveness ≥ Medium\n"
-                "- Low: same or better (≥); remaining Low applied to Headline Area Unit Deficit")
+                "- Low: same or better (≥)\n"
+                "- Any surplus can cover Headline (prioritized High→Medium→Low)")
 
 if not file:
     st.info("Upload a Metric workbook to begin.")
@@ -777,41 +940,24 @@ with tabs[0]:
         # 1) On-site offsets between habitats (flows)
         alloc = apply_area_offsets(area_norm)
 
-        # 2) Headline deficit & Low→Headline
-        headline_def = parse_headline_area_deficit(xls)
-
-        # Prepare per-surplus remaining detail to pull Low into Headline as explicit flows
+        # 2) Dynamic Headline target parsing
+        headline_info = parse_headline_target_row(xls, "Area habitat units")
+        target_pct = headline_info["target_percent"]
+        baseline_units = headline_info["baseline_units"]
+        
+        # Calculate achieved uplift from project-wide changes
+        achieved_uplift = float(area_norm["project_wide_change"].clip(lower=0).sum())
+        target_uplift = baseline_units * target_pct
+        remaining_target = max(target_uplift - achieved_uplift, 0.0)
+        
+        # Prepare per-surplus remaining detail for allocation to headline
         surplus_detail = alloc["surplus_after_offsets_detail"].copy()
         surplus_detail["surplus_remaining_units"] = coerce_num(surplus_detail["surplus_remaining_units"]).fillna(0.0)
-
-        # Low surplus total available
-        low_remaining = float(surplus_detail.loc[surplus_detail["distinctiveness"]=="Low","surplus_remaining_units"].sum())
-
-        # Amount to apply from Low onto Headline
-        applied_low_to_headline = min(headline_def or 0.0, low_remaining) if headline_def is not None else 0.0
-        residual_headline_after_low = (headline_def - applied_low_to_headline) if headline_def is not None else None
-
-        # Generate explicit NG coverage flows from Low surpluses (largest-first)
-        ng_flow_rows = []
-        if applied_low_to_headline and applied_low_to_headline > 1e-9:
-            low_items = surplus_detail[surplus_detail["distinctiveness"]=="Low"].copy()
-            low_items = low_items.sort_values("surplus_remaining_units", ascending=False)
-            to_cover = applied_low_to_headline
-            for _, s in low_items.iterrows():
-                if to_cover <= 1e-9: break
-                give = float(min(to_cover, s["surplus_remaining_units"]))
-                if give <= 0: continue
-                ng_flow_rows.append({
-                    "deficit_habitat": "Net Gain uplift (Headline)",
-                    "deficit_broad": "—",
-                    "deficit_band": "Net Gain",
-                    "surplus_habitat": clean_text(s["habitat"]),
-                    "surplus_broad": clean_text(s["broad_group"]),
-                    "surplus_band": "Low",
-                    "units_transferred": round(give, 7),
-                    "flow_type": "low→headline"
-                })
-                to_cover -= give
+        
+        # Allocate surpluses to headline (any band, prioritized High→Medium→Low)
+        applied_to_headline, ng_flow_rows = allocate_to_headline(remaining_target, surplus_detail)
+        headline_def = remaining_target
+        residual_headline_after_allocation = max(remaining_target - applied_to_headline, 0.0)
 
         # Combine habitat flows + NG flows into one matrix so the story is traceable
         flows_matrix = pd.concat(
@@ -819,23 +965,27 @@ with tabs[0]:
             ignore_index=True
         ) if ng_flow_rows else alloc["allocation_flows"].copy()
 
-        # Surplus remaining by band (after subtracting what we used for Headline from Low)
+        # Surplus remaining by band (after subtracting what we used for Headline)
         surplus_by_band = alloc["surplus_remaining_by_band"].copy()
-        if applied_low_to_headline and applied_low_to_headline > 0:
-            mask_low = surplus_by_band["band"] == "Low"
-            if mask_low.any():
-                surplus_by_band.loc[mask_low, "surplus_remaining_units"] = (
-                    surplus_by_band.loc[mask_low, "surplus_remaining_units"] - applied_low_to_headline
-                ).clip(lower=0)
+        if ng_flow_rows:
+            # Subtract allocated amounts from each band
+            for flow in ng_flow_rows:
+                band = flow["surplus_band"]
+                amount = flow["units_transferred"]
+                mask_band = surplus_by_band["band"] == band
+                if mask_band.any():
+                    surplus_by_band.loc[mask_band, "surplus_remaining_units"] = (
+                        surplus_by_band.loc[mask_band, "surplus_remaining_units"] - amount
+                    ).clip(lower=0)
 
         # Habitat residuals after on-site offsets
         residual_table = alloc["residual_off_site"].copy()
         sum_habitat_residuals = float(residual_table["unmet_units_after_on_site_offset"].sum()) if not residual_table.empty else 0.0
 
-        # Net Gain remainder to quote = (Headline after Low) − (habitat residuals)
+        # Net Gain remainder to quote = (Headline after allocation) − (habitat residuals)
         remaining_ng_to_quote = None
-        if residual_headline_after_low is not None:
-            remaining_ng_to_quote = max(residual_headline_after_low - sum_habitat_residuals, 0.0)
+        if residual_headline_after_allocation is not None:
+            remaining_ng_to_quote = max(residual_headline_after_allocation - sum_habitat_residuals, 0.0)
 
         # Combined residual headline table (add NG remainder row only if >0)
         combined_residual = residual_table.copy()
@@ -868,19 +1018,21 @@ with tabs[0]:
         # ---------- EXPLAINER (maths in words) ----------
         explain_md = build_area_explanation(
             alloc=alloc,
+            headline_info=headline_info,
             headline_def=headline_def,
-            low_available=float(low_remaining),
-            applied_low_to_headline=applied_low_to_headline,
-            residual_headline_after_low=residual_headline_after_low,
+            applied_to_headline=applied_to_headline,
+            residual_headline_after_allocation=residual_headline_after_allocation,
             remaining_ng_to_quote=remaining_ng_to_quote,
             ng_flow_rows=ng_flow_rows
         )
         st.markdown(
             '<div class="explain-card"><h4>What this app just did (in plain English)</h4><p>We read the Metric and applied the trading rules; here’s exactly how units moved:</p>'
             + explain_md.replace("\n","<br/>") +
-            f'<p class="explain-kv">Key numbers: <code>headline={0.0 if headline_def is None else float(headline_def):.4f}</code>, '
-            f'<code>low_used={float(applied_low_to_headline or 0.0):.4f}</code>, '
-            f'<code>headline_after_low={0.0 if residual_headline_after_low is None else float(residual_headline_after_low):.4f}</code>, '
+            f'<p class="explain-kv">Key numbers: <code>target={target_pct*100:.1f}%</code>, '
+            f'<code>baseline={baseline_units:.4f}</code>, '
+            f'<code>headline={0.0 if headline_def is None else float(headline_def):.4f}</code>, '
+            f'<code>applied_to_headline={float(applied_to_headline or 0.0):.4f}</code>, '
+            f'<code>headline_after_allocation={0.0 if residual_headline_after_allocation is None else float(residual_headline_after_allocation):.4f}</code>, '
             f'<code>habitat_unmet={sum_habitat_residuals:.4f}</code>, '
             f'<code>ng_remainder={float(remaining_ng_to_quote or 0.0):.4f}</code>'
             + (f', <code>overall_surplus={overall_surplus_after_all:.4f}</code>' if overflow_happened else '') +
@@ -912,8 +1064,8 @@ with tabs[0]:
         # ---------- HERO CARD ----------
         st.markdown('<div class="hero-card">', unsafe_allow_html=True)
         st.markdown(
-            '<div class="hero-title">🧮 Still needs mitigation OFF-SITE (after offsets + Low→Headline)</div>'
-            '<div class="hero-sub">This is what you need to source or quote for.</div>',
+            f'<div class="hero-title">🧮 Still needs mitigation OFF-SITE (after offsets + surplus→headline)</div>'
+            f'<div class="hero-sub">This is what you need to source or quote for.</div>',
             unsafe_allow_html=True
         )
         c1, c2, c3 = st.columns(3)
@@ -924,11 +1076,11 @@ with tabs[0]:
             st.markdown('<div class="kpi"><div class="label">Line items</div>'
                         f'<div class="value">{k_rows}</div></div>', unsafe_allow_html=True)
         with c3:
-            st.markdown('<div class="kpi"><div class="label">NG remainder (10%)</div>'
+            st.markdown(f'<div class="kpi"><div class="label">NG remainder ({target_pct*100:.0f}%)</div>'
                         f'<div class="value">{k_ng}</div></div>', unsafe_allow_html=True)
 
         if overflow_happened:
-            st.success("🎉 **Overall surplus after meeting all Area + 10% Net Gain**")
+            st.success(f"🎉 **Overall surplus after meeting all Area + {target_pct*100:.0f}% Net Gain**")
             st.write(pd.DataFrame([{"surplus_units_total": round(overall_surplus_after_all, 4)}]))
             st.write(
                 surplus_by_band.rename(columns={
@@ -938,7 +1090,7 @@ with tabs[0]:
             )
             st.session_state["total_overall_surplus_area"] = float(round(overall_surplus_after_all, 4))
         else:
-            st.info("No overall surplus remaining after meeting habitat deficits and 10% Net Gain.")
+            st.info(f"No overall surplus remaining after meeting habitat deficits and {target_pct*100:.0f}% Net Gain.")
             st.session_state["total_overall_surplus_area"] = 0.0
 
         st.dataframe(combined_residual, use_container_width=True, height=260)
@@ -958,7 +1110,7 @@ with tabs[0]:
         st.session_state["combined_residual_area"] = combined_residual
 
         # ---------- Expanders ----------
-        with st.expander("🔗 Eligibility matrix (mitigation flows — includes Low→Headline)", expanded=False):
+        with st.expander("🔗 Eligibility matrix (mitigation flows — includes surplus→headline)", expanded=False):
             if flows_matrix.empty:
                 st.info("No flows recorded.")
             else:
@@ -1074,7 +1226,7 @@ with tabs[3]:
                 "application/json"
             )
 
-st.caption("The headline card is the number you quote. The flows table now also shows Low→Headline coverage, so Net Gain mitigation is fully traceable.")
+st.caption("The headline card is the number you quote. The flows table now shows surplus→headline coverage (from any band), so Net Gain mitigation is fully traceable with dynamic target %.")
 
 
 
