@@ -830,14 +830,14 @@ def build_sankey_requirements_left(
         return fig
 
     node_kwargs = dict(
-        pad=8 if compact_nodes else 12,        # was 10/14
-        thickness=12 if compact_nodes else 16, # was 14/18
+        pad=4 if compact_nodes else 8,         # Reduced from 8/12 to prevent overlap
+        thickness=10 if compact_nodes else 14,  # Reduced from 12/16
         line=dict(width=0.4, color="rgba(120,120,120,0.25)"),
         label=labels, color=colors, x=xs, y=ys
     )
 
     fig = go.Figure(data=[go.Sankey(
-        arrangement="snap",
+        arrangement="fixed",  # Keep nodes in specified x,y positions
         node=node_kwargs,
         link=dict(source=sources, target=targets, value=values, color=lcolors)
     )])
