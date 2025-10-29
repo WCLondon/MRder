@@ -302,7 +302,7 @@ def apply_area_offsets(area_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         original_need = abs(float(d["project_wide_change"]))
         received = got_by_deficit.get(key, 0.0)
         unmet = max(original_need - received, 0.0)
-        if unmet > 1e-9:
+        if unmet > 1e-4:  # Increased threshold to filter out floating-point errors
             remaining_records.append({
                 "habitat": key[0],
                 "broad_group": key[1],
@@ -787,14 +787,14 @@ def build_sankey_requirements_left(
     # ----- links -----
     sources, targets, values, lcolors = [], [], [], []
 
-    # Deficit → Surplus
+    # Surplus → Deficit (REVERSED: ensures surplus nodes sized by total outgoing flow)
     for _, r in agg.iterrows():
         d_lab = f"D: {r['deficit_habitat']}"
         s_lab = f"S: {r['surplus_habitat']}"
         val   = abs(float(r["units_transferred"]))  # Use absolute value for node sizing
         if val <= min_link: continue
         if d_lab in idx and s_lab in idx:
-            sources.append(idx[d_lab]); targets.append(idx[s_lab]); values.append(val)
+            sources.append(idx[s_lab]); targets.append(idx[d_lab]); values.append(val)  # REVERSED
             lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
 
     # Each deficit’s unmet residual → Total NG
