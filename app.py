@@ -539,7 +539,7 @@ def allocate_to_headline(
             continue
         
         flows.append({
-            "deficit_habitat": "Net Gain uplift (Headline)",
+            "deficit_habitat": "Headline Net Gain requirement",
             "deficit_broad": "—",
             "deficit_band": "Net Gain",
             "surplus_habitat": clean_text(s["habitat"]),
@@ -736,8 +736,8 @@ def build_sankey_requirements_left(
             if s_band in sur_nodes_by_band and s_lab not in sum(sur_nodes_by_band.values(), []):
                 sur_nodes_by_band[s_band].append(s_lab)
 
-    # Always show Headline left node
-    headline_left = "D: Headline 10% requirement"
+    # Always show Headline left node - it's a REQUIREMENT (deficit), not an uplift
+    headline_left = "D: Headline Net Gain requirement"
 
     # ----- assemble nodes -----
     labels, colors, xs, ys, idx = [], [], [], [], {}
@@ -808,7 +808,7 @@ def build_sankey_requirements_left(
 
     # Surplus → Headline (applied) - supports any band now
     headline_from_surplus = f[
-        (f["deficit_habitat"].astype(str).str.strip().str.lower() == "net gain uplift (headline)")
+        (f["deficit_habitat"].astype(str).str.strip().str.lower() == "headline net gain requirement")
         & (f["units_transferred"] > min_link)
     ]
     for _, rr in headline_from_surplus.iterrows():
@@ -993,25 +993,26 @@ with tabs[0]:
         baseline_units = headline_info["baseline_units"]
         
         # Calculate headline requirement: baseline × target %
-        # This is the TOTAL requirement, not reduced by achieved uplift
+        # This is the TOTAL Net Gain requirement that must be achieved
         headline_requirement = baseline_units * target_pct
         
-        # Calculate achieved uplift from project-wide changes
-        achieved_uplift = float(area_norm["project_wide_change"].clip(lower=0).sum())
-        
-        # Remaining target for allocation (after subtracting achieved uplift)
-        remaining_target = max(headline_requirement - achieved_uplift, 0.0)
+        # NOTE: We do NOT subtract achieved_uplift here because:
+        # - The surpluses available for allocation already represent the achieved uplift
+        # - We want to show the TOTAL requirement in the Sankey, with surpluses flowing in
         
         # Prepare per-surplus remaining detail for allocation to headline
         surplus_detail = alloc["surplus_after_offsets_detail"].copy()
         surplus_detail["surplus_remaining_units"] = coerce_num(surplus_detail["surplus_remaining_units"]).fillna(0.0)
         
         # Allocate surpluses to headline (any band, prioritized High→Medium→Low)
-        applied_to_headline, ng_flow_rows = allocate_to_headline(remaining_target, surplus_detail)
+        # Pass the FULL headline_requirement, not reduced by anything
+        applied_to_headline, ng_flow_rows = allocate_to_headline(headline_requirement, surplus_detail)
         
-        # headline_def is the TOTAL requirement (for display), not the remaining
+        # headline_def is the TOTAL requirement (for display)
         headline_def = headline_requirement
-        residual_headline_after_allocation = max(remaining_target - applied_to_headline, 0.0)
+        
+        # Remainder after surplus allocation goes to "Total Net Gain (to source)"
+        residual_headline_after_allocation = max(headline_requirement - applied_to_headline, 0.0)
 
         # Combine habitat flows + NG flows into one matrix so the story is traceable
         flows_matrix = pd.concat(
@@ -1055,7 +1056,7 @@ with tabs[0]:
             combined_residual = pd.concat([
                 combined_residual,
                 pd.DataFrame([{
-                    "habitat": "Net gain uplift (Area, residual after habitat-specific)",
+                    "habitat": "Headline Net Gain requirement (Area, residual after surplus allocation)",
                     "broad_group": "—",
                     "distinctiveness": "Net Gain",
                     "unmet_units_after_on_site_offset": round(remaining_ng_to_quote, 4)
