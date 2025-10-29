@@ -998,7 +998,9 @@ with tabs[0]:
         
         # NOTE: We do NOT subtract achieved_uplift here because:
         # - The surpluses available for allocation already represent the achieved uplift
-        # - We want to show the TOTAL requirement in the Sankey, with surpluses flowing in
+        # - Subtracting achieved_uplift would be double-counting (counting it twice)
+        # - Previous incorrect approach: remaining_target = headline_requirement - achieved_uplift
+        # - Correct approach: headline_requirement is the total, surpluses flow in to cover it
         
         # Prepare per-surplus remaining detail for allocation to headline
         surplus_detail = alloc["surplus_after_offsets_detail"].copy()
