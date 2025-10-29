@@ -646,6 +646,7 @@ def build_sankey_requirements_left(
     residual_table: pd.DataFrame | None,
     remaining_ng_to_quote: float | None,
     deficit_table: pd.DataFrame,
+    surplus_detail: pd.DataFrame | None = None,
     min_link: float = 1e-4,
     height: int = 400,          # was 560
     compact_nodes: bool = True, # default to compact
@@ -792,6 +793,19 @@ def build_sankey_requirements_left(
     if (remaining_ng_to_quote or 0.0) > min_link and (headline_left in idx):
         sources.append(idx[headline_left]); targets.append(idx[total_ng])
         values.append(float(remaining_ng_to_quote)); lcolors.append(_rgba("Net Gain", 0.85))
+
+    # Remaining surpluses (after all allocations) → Total NG
+    if surplus_detail is not None and not surplus_detail.empty:
+        for _, s in surplus_detail.iterrows():
+            remaining = float(s.get("surplus_remaining_units", 0.0))
+            if remaining > min_link:
+                s_lab = f"S: {clean_text(s['habitat'])}"
+                if s_lab in idx:
+                    sources.append(idx[s_lab]); targets.append(idx[total_ng])
+                    values.append(remaining)
+                    # Use the band color with transparency
+                    band = str(s.get("distinctiveness", "Other"))
+                    lcolors.append(_rgba(band, 0.65))
 
     # If no links, show friendly placeholder
     if not values:
@@ -972,10 +986,18 @@ with tabs[0]:
             for flow in ng_flow_rows:
                 band = flow["surplus_band"]
                 amount = flow["units_transferred"]
+                habitat = flow["surplus_habitat"]
                 mask_band = surplus_by_band["band"] == band
                 if mask_band.any():
                     surplus_by_band.loc[mask_band, "surplus_remaining_units"] = (
                         surplus_by_band.loc[mask_band, "surplus_remaining_units"] - amount
+                    ).clip(lower=0)
+                # Also update the detailed surplus_detail
+                mask_detail = (surplus_detail["habitat"].astype(str).map(clean_text) == clean_text(habitat)) & \
+                              (surplus_detail["distinctiveness"].astype(str) == band)
+                if mask_detail.any():
+                    surplus_detail.loc[mask_detail, "surplus_remaining_units"] = (
+                        surplus_detail.loc[mask_detail, "surplus_remaining_units"] - amount
                     ).clip(lower=0)
 
         # Habitat residuals after on-site offsets
@@ -1045,6 +1067,7 @@ with tabs[0]:
                 residual_table=residual_table,
                 remaining_ng_to_quote=remaining_ng_to_quote,
                 deficit_table=alloc["deficits"],
+                surplus_detail=surplus_detail,
                 height=380,            # <= compact height
                 compact_nodes=True,    # force compact
                 show_zebra=True
