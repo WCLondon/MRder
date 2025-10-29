@@ -787,6 +787,9 @@ def build_sankey_requirements_left(
     # ----- links -----
     sources, targets, values, lcolors = [], [], [], []
 
+    # Track total flows INTO each surplus node (from deficit offsetting + headline)
+    surplus_incoming = {}  # {surplus_label: total_incoming}
+    
     # Deficit → Surplus
     for _, r in agg.iterrows():
         d_lab = f"D: {r['deficit_habitat']}"
@@ -796,6 +799,7 @@ def build_sankey_requirements_left(
         if d_lab in idx and s_lab in idx:
             sources.append(idx[d_lab]); targets.append(idx[s_lab]); values.append(val)
             lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
+            surplus_incoming[s_lab] = surplus_incoming.get(s_lab, 0.0) + val
 
     # Each deficit’s unmet residual → Total NG
     for _, r in per_def.iterrows():
@@ -816,6 +820,7 @@ def build_sankey_requirements_left(
             amt = float(rr["units_transferred"])
             band = str(rr.get('surplus_band', 'Low'))
             sources.append(idx[headline_left]); targets.append(idx[s_lab]); values.append(amt)
+            surplus_incoming[s_lab] = surplus_incoming.get(s_lab, 0.0) + amt
             # Use semi-transparent dark blue for surplus→headline flows
             if rr.get('flow_type') == 'surplus→headline':
                 lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
@@ -828,18 +833,47 @@ def build_sankey_requirements_left(
         values.append(float(remaining_ng_to_quote))
         lcolors.append("rgba(244,67,54,0.6)")  # Red for deficit flows
 
-    # Remaining surpluses (after all allocations) → Total NG
+    # Add source nodes for each surplus to establish correct node sizing
+    # Surplus nodes need incoming flows equal to their full original value
+    # so they size correctly in the Sankey (not just by their outgoing "remainder" flow)
+    if surplus_table is not None and not surplus_table.empty:
+        for _, s in surplus_table.iterrows():
+            s_lab = f"S: {clean_text(s['habitat'])}"
+            if s_lab not in idx:
+                continue
+            original_value = float(s.get("project_wide_change", 0.0))
+            if original_value > min_link:
+                # Add a creation/source node for this surplus
+                source_label = f"Created: {clean_text(s['habitat'])}"
+                if source_label not in idx:
+                    # Add the source node (invisible/same band as surplus)
+                    s_band = str(s.get("distinctiveness", "Other"))
+                    if s_band in data_band_to_x:
+                        labels.append(source_label)
+                        colors.append("rgba(76,175,80,0.2)")  # Very transparent green
+                        xs.append(data_band_to_x[s_band] - 0.05)  # Slightly left of surplus
+                        ys.append(ys[idx[s_lab]])  # Same y as surplus node
+                        idx[source_label] = len(labels) - 1
+                        
+                        # Add flow from source to surplus
+                        sources.append(idx[source_label]); targets.append(idx[s_lab])
+                        values.append(original_value)
+                        lcolors.append("rgba(76,175,80,0.1)")  # Nearly invisible
+
+    # Remaining surpluses (after all allocations) → Surplus Pool
     if surplus_detail is not None and not surplus_detail.empty:
         for _, s in surplus_detail.iterrows():
+            s_lab = f"S: {clean_text(s['habitat'])}"
+            if s_lab not in idx:
+                continue
+                
             remaining = float(s.get("surplus_remaining_units", 0.0))
+            
+            # Create the outgoing flow to surplus pool
             if remaining > min_link:
-                s_lab = f"S: {clean_text(s['habitat'])}"
-                if s_lab in idx:
-                    sources.append(idx[s_lab]); targets.append(idx[surplus_pool])
-                    values.append(remaining)
-                    # Use the band color with transparency
-                    band = str(s.get("distinctiveness", "Other"))
-                    lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
+                sources.append(idx[s_lab]); targets.append(idx[surplus_pool])
+                values.append(remaining)
+                lcolors.append("rgba(76,175,80,0.6)")  # Green for surplus flows
 
     # If no links, show friendly placeholder
     if not values:
@@ -1096,6 +1130,13 @@ with tabs[0]:
             unsafe_allow_html=True
         )
         with st.expander("📊 Sankey — Requirements (left) → Surpluses (right) → Total Net Gain", expanded=False):
+            # Debug: Show surplus_detail values
+            if surplus_detail is not None and not surplus_detail.empty:
+                st.caption("Debug: Surplus remaining units after all trading and headline allocation")
+                debug_df = surplus_detail[["habitat", "distinctiveness", "surplus_remaining_units"]].copy()
+                debug_df["surplus_remaining_units"] = debug_df["surplus_remaining_units"].round(4)
+                st.dataframe(debug_df, use_container_width=True)
+            
             sankey_fig = build_sankey_requirements_left(
                 flows_matrix=flows_matrix,
                 residual_table=residual_table,
